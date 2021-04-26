@@ -6,12 +6,14 @@ import requests
 import archiveis
 import asyncio
 import waybackpy
+import functools
 from datetime import date
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
+
 
 client = discord.Client()
 agent_name = "Hal9001"
-_executor = ThreadPoolExecutor(1)
+
 
 agent_id = 3
 event_id = 1
@@ -61,8 +63,9 @@ async def on_message(message):
 #Helpers 
 def helpsave(wayback):
     return wayback.save()
-
-async def archive_helper(url):
+    
+    
+def archive_helper(url):
     wayback = waybackpy.Url(url, user_agent)
     #loop = asyncio.get_event_loop()
     #archive = await loop.run_in_executor(_executor, helpsave(wayback))
@@ -71,6 +74,8 @@ async def archive_helper(url):
     #
     archive = wayback.save()
     return archive
+    
+
     
 def makeTask(name, description, data, timeest, request_responses, maker):
     taskdef = {"name": name,
@@ -112,12 +117,21 @@ async def prepFlag(message):
     await message.channel.send("Beginning Flag Prep")
     def check(m):
         return m.author == message.author and m.channel == message.channel
-    await message.channel.send("Would you like to submit any metadata or additional information? (N) to cancel")
+    
+    await message.channel.send("Archiving...")
     url = cmds[1]
+    loop = asyncio.get_running_loop()
+    archive = await loop.run_in_executor(None, functools.partial(archive_helper, url))
+    await message.channel.send("Would you like to submit any metadata or additional information? (N) to cancel")
+    
     #archive = await asyncio.gather((archive_helper(url)))
-    archive = await archive_helper(url)
+    
+    #archive = await archive_helper(url)
+    #archive_helper(url)
     answer = await client.wait_for('message', timeout = 45, check=check)
     await message.channel.send("Thank you")
+    
+
     context = "No additional Context"
     if answer.content.strip() is not "N":
         context = answer.content.strip()
