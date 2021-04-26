@@ -4,30 +4,107 @@ import os
 import subprocess 
 import requests
 import archiveis
+import asyncio
 import waybackpy
 from datetime import date
+from concurrent.futures import ThreadPoolExecutor
 
 client = discord.Client()
 agent_name = "Hal9001"
+_executor = ThreadPoolExecutor(1)
+
 agent_id = 3
 event_id = 1
 task_url = "https://quriosinty-dev.herokuapp.com/api/v1/task/"
 
 prefix = "~"
 user_agent = "Mozilla/5.0 (Windows NT 5.1; rv:40.0) Gecko/20100101 Firefox/40.0"
+flag_queue = []
 
 @client.event
 async def on_ready():
     print('We have logged in as {0.user}'.format(client))
     
+#Main Controls
+async def commands_interpreter(message):
+    command = stripCommandList(message)[0]
+    if command == "ping":
+        await returnPing(message)
+    elif command == "prepFlag":
+        await prepFlag(message)
+    elif command == "ShutDown":
+        await shutDown(message)
+    elif command == "Restart":
+        await restart(message)
+    elif command == "help":
+        await help(message)
+    elif command == "viewTask":
+        await viewTask(message)
+    elif command == "createChannel":
+        await createChannel(message)
+    elif command == "doneHere":
+        await doneHere(message)
+    elif command == "viewQueue":
+        await viewQueue(message)
+    else:
+        rtrnmsg = "I'm sorry " + getName(message) + ", I'm afraid I can't do that."
+        await message.channel.send(rtrnmsg)
+    
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
+
+    if message.content.startswith(prefix):
+        await commands_interpreter(message)
+        
+#Helpers 
+def helpsave(wayback):
+    return wayback.save()
+
+async def archive_helper(url):
+    wayback = waybackpy.Url(url, user_agent)
+    #loop = asyncio.get_event_loop()
+    #archive = await loop.run_in_executor(_executor, helpsave(wayback))
+    
+    #archive = await wayback.save()
+    #
+    archive = wayback.save()
+    return archive
+    
+def makeTask(name, description, data, timeest, request_responses, maker):
+    taskdef = {"name": name,
+              #"status" : "Open",
+              "description" : description,
+              "request_responses" : request_responses,
+              "time_estimate" : timeest,
+              "data" : data, 
+              "tool" : str(agent_id),
+              "event_id" : str(event_id),
+              "created_by" : maker}
+    url = requests.post(task_url, data = taskdef)
+    
+def getName(message):
+    return message.author.display_name
+   
+def stripCommandList(message):
+    return message.content[len(prefix):].split()
+   
+def formatTask(task):
+    taskstr = task['name'] + " " + task['status'] + " since " + task['date_created'] + "\n"
+    taskstr += str(task['request_responses']) + " responses so far " + task['time_estimate'] + "(s) estimated\n"
+    taskstr += "Description:\n" + task['description'] + "\n"
+    taskstr += "Flag URL: " + task['flag']['url']
+    return taskstr
+
+
+#Temporary Functions (Until I can figure out how to use the API)
+    
+    
 #Command Functions
 async def returnPing(message):
     await message.channel.send("Pong")
     
-async def archive_helper(url):
-    wayback = waybackpy.Url(url, user_agent)
-    archive = wayback.save()
-    return archive
   
 async def prepFlag(message):
     cmds = stripCommandList(message)
@@ -37,6 +114,7 @@ async def prepFlag(message):
         return m.author == message.author and m.channel == message.channel
     await message.channel.send("Would you like to submit any metadata or additional information? (N) to cancel")
     url = cmds[1]
+    #archive = await asyncio.gather((archive_helper(url)))
     archive = await archive_helper(url)
     answer = await client.wait_for('message', timeout = 45, check=check)
     await message.channel.send("Thank you")
@@ -58,23 +136,31 @@ async def prepFlag(message):
         return 
     data_format = {"URL" : url,
                    "ArchiveURL" : str(archive.archive_url),
-                   "ArchiveTIme" : str(archive.timestamp.strftime("%m/%d/%Y %H:%M:%S")),
+                   "ArchiveTime" : str(archive.timestamp.strftime("%m/%d/%Y %H:%M:%S")),
                    "UserDescription" : context}
+                   
+    flag_queue.append(data_format)
     makeTask("Flag Creation Request", "Please Examine and Create Flags", data_format,
                 "1 minute", 1, message.author.display_name)
     await message.channel.send("Submitted")
-def makeTask(name, description, data, timeest, request_responses, maker):
-    taskdef = {"name": name,
-              #"status" : "Open",
-              "description" : description,
-              "request_responses" : request_responses,
-              "time_estimate" : timeest,
-              "data" : data, 
-              "tool" : str(agent_id),
-              "event_id" : str(event_id),
-              "created_by" : maker}
-    url = requests.post(task_url, data = taskdef)
-    
+
+async def viewQueue(message):
+    counter = 1
+    returnStr = "```"
+    for i in range(len(flag_queue)):
+        returnStr+= "Flag " + str(i+1) + "\n"
+        returnStr+= "URL: " + flag_queue[i]["URL"] + "\n"
+        returnStr+= "Archive URL: " + flag_queue[i]["ArchiveURL"]+ "\n"
+        returnStr+= "Archive Time: " + flag_queue[i]["ArchiveTime"]+ "\n"
+        returnStr+= "Description: " + flag_queue[i]["UserDescription"]+ "\n"
+        if counter > 14:
+            await message.channel.send(returnStr+"```")
+            returnStr = "```"
+            counter = 0
+    if counter > 0:
+        await message.channel.send(returnStr+"```")
+        
+
 async def createChannel(message):
     cmds = stripCommandList(message)
     cmdstr = " ".join(cmds[1:])
@@ -131,49 +217,7 @@ async def help(message):
         ViewTasks:\t\tView A Specified Task
         """
     await message.channel.send(helpMenu)
-#Helpers
-def getName(message):
-    return message.author.display_name
-   
-def stripCommandList(message):
-    return message.content[len(prefix):].split()
-   
-def formatTask(task):
-    taskstr = task['name'] + " " + task['status'] + " since " + task['date_created'] + "\n"
-    taskstr += str(task['request_responses']) + " responses so far " + task['time_estimate'] + "(s) estimated\n"
-    taskstr += "Description:\n" + task['description'] + "\n"
-    taskstr += "Flag URL: " + task['flag']['url']
-    return taskstr
-#Main Controls
-async def commands_interpreter(message):
-    command = stripCommandList(message)[0]
-    if command == "ping":
-        await returnPing(message)
-    elif command == "prepFlag":
-        await prepFlag(message)
-    elif command == "ShutDown":
-        await shutDown(message)
-    elif command == "Restart":
-        await restart(message)
-    elif command == "help":
-        await help(message)
-    elif command == "viewTask":
-        await viewTask(message)
-    elif command == "createChannel":
-        await createChannel(message)
-    elif command == "doneHere":
-        await doneHere(message)
-    else:
-        rtrnmsg = "I'm sorry " + getName(message) + ", I'm afraid I can't do that."
-        await message.channel.send(rtrnmsg)
 
-@client.event
-async def on_message(message):
-    if message.author == client.user:
-        return
-
-    if message.content.startswith(prefix):
-        await commands_interpreter(message)
 
 with open('token.txt', 'r') as file:
     token = file.read().strip()
