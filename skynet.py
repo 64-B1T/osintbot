@@ -1,21 +1,27 @@
-import discord
 import sys
 import os
 import subprocess
 import requests
-import archiveis
 import asyncio
-import waybackpy
-from datetime import date
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from configparser import ConfigParser
+
+import discord
+import archiveis
+import waybackpy
+
 
 client = discord.Client()
 agent_name = "Hal9001"
 _executor = ThreadPoolExecutor(1)
 
-agent_id = 3
-event_id = 1
-task_url = "https://quriosinty-dev.herokuapp.com/api/v1/task/"
+config = ConfigParser()
+config.read("./config.ini")
+agent_id = config["DEFAULT"]["AgentId"]
+event_id = config["DEFAULT"]["EventId"]
+tool_token = config["DEFAULT"]["ToolToken"]
+task_url = config["DEFAULT"]["QuriosintyUrl"] + "task/"
 
 prefix = "~"
 user_agent = "Mozilla/5.0 (Windows NT 5.1; rv:40.0) Gecko/20100101 Firefox/40.0"
@@ -81,16 +87,15 @@ async def archive_helper(url):
 def makeTask(name, description, data, timeest, request_responses, maker):
     taskdef = {
         "name": name,
-        # "status" : "Open",
         "description": description,
         "request_responses": request_responses,
         "time_estimate": timeest,
         "data": data,
         "tool": str(agent_id),
         "event_id": str(event_id),
-        "created_by": maker,
     }
-    url = requests.post(task_url, data=taskdef)
+    headers = {'content-type': 'application/json', 'Authorization': 'Token {}'.format(tool_token)} 
+    return requests.post(task_url, data=taskdef, headers=headers)
 
 
 def getName(message):
