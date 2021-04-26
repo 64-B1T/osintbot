@@ -3,10 +3,18 @@ import sys
 import os
 import subprocess 
 import requests
+import archiveis
+import waybackpy
+from datetime import date
 
 client = discord.Client()
+agent_name = "Hal9001"
+agent_id = 3
+event_id = 1
+task_url = "https://quriosinty-dev.herokuapp.com/api/v1/task/"
 
 prefix = "~"
+user_agent = "Mozilla/5.0 (Windows NT 5.1; rv:40.0) Gecko/20100101 Firefox/40.0"
 
 @client.event
 async def on_ready():
@@ -15,9 +23,83 @@ async def on_ready():
 #Command Functions
 async def returnPing(message):
     await message.channel.send("Pong")
+    
+async def archive_helper(url):
+    wayback = waybackpy.Url(url, user_agent)
+    archive = wayback.save()
+    return archive
   
-async def newFlag(message):
-    await message.channel.send("Not Implemented Yet, But Someday...")
+async def prepFlag(message):
+    cmds = stripCommandList(message)
+    #archivelink = archiveis.capture(cmds[1])
+    await message.channel.send("Beginning Flag Prep")
+    def check(m):
+        return m.author == message.author and m.channel == message.channel
+    await message.channel.send("Would you like to submit any metadata or additional information? (N) to cancel")
+    url = cmds[1]
+    archive = await archive_helper(url)
+    answer = await client.wait_for('message', timeout = 45, check=check)
+    await message.channel.send("Thank you")
+    context = "No additional Context"
+    if answer.content.strip() is not "N":
+        context = answer.content.strip()
+     
+    
+    help_str = "New Flag: " + url + "\n" + "Archive Link: " + str(archive.archive_url) + "\n"
+    help_str += "Archived At: " + str(archive.timestamp.strftime("%m/%d/%Y %H:%M:%S")) + "\n"
+    help_str += "User Description: " + context
+    await message.channel.send(help_str)
+    await message.channel.send("Shall I submit the task request? (Y/N)")
+    
+    answer = await client.wait_for('message', timeout = 45, check = check)
+    if answer.content.strip().lower() != "y":
+        #await message.channel.send("This is what I got:(" + answer.content.strip().lower() + ")")
+        await message.channel.send("Cancelling")
+        return 
+    data_format = {"URL" : url,
+                   "ArchiveURL" : str(archive.archive_url),
+                   "ArchiveTIme" : str(archive.timestamp.strftime("%m/%d/%Y %H:%M:%S")),
+                   "UserDescription" : context}
+    makeTask("Flag Creation Request", "Please Examine and Create Flags", data_format,
+                "1 minute", 1, message.author.display_name)
+    await message.channel.send("Submitted")
+def makeTask(name, description, data, timeest, request_responses, maker):
+    taskdef = {"name": name,
+              #"status" : "Open",
+              "description" : description,
+              "request_responses" : request_responses,
+              "time_estimate" : timeest,
+              "data" : data, 
+              "tool" : str(agent_id),
+              "event_id" : str(event_id),
+              "created_by" : maker}
+    url = requests.post(task_url, data = taskdef)
+    
+async def createChannel(message):
+    cmds = stripCommandList(message)
+    cmdstr = " ".join(cmds[1:])
+    cmdl = cmdstr.split(",")
+    
+    server = message.guild;
+    catid = discord.utils.get(server.categories, name = "Discussions")
+    channel = await server.create_text_channel(cmdl[0], category=catid)
+    if len(cmdl) > 1:
+        await channel.send("This channel was created to discuss: " + cmdl[1])
+    
+async def doneHere(message):
+    if message.channel.category.name == "Discussions":
+        await message.channel.send("Are you sure? (Y/N)")
+        def check(m):
+            return m.author == message.author and m.channel == message.channel
+        answer = await client.wait_for('message', timeout = 45, check = check)
+        if answer.content.strip().lower() != "y":
+            #await message.channel.send("This is what I got:(" + answer.content.strip().lower() + ")")
+            await message.channel.send("Cancelling")
+            return 
+        await message.channel.send("Goodbye")
+        await message.channel.delete()
+    else:
+        await message.channel.send("I don't have permission for that")
     
 async def shutDown(message):
     await message.channel.send("Shutting Down. Good Bye Dave")
@@ -31,7 +113,7 @@ async def restart(message):
 async def viewTask(message):
     cmds = stripCommandList(message)
     num = cmds[1]
-    x = requests.get("https://quriosinty-dev.herokuapp.com/api/v1/task/"+num)
+    x = requests.get(task_url+num)
     if x.ok:
         await message.channel.send(formatTask(x.json()))
     else:
@@ -67,16 +149,20 @@ async def commands_interpreter(message):
     command = stripCommandList(message)[0]
     if command == "ping":
         await returnPing(message)
-    elif command == "newFlag":
-        await newFlag(message)
+    elif command == "prepFlag":
+        await prepFlag(message)
     elif command == "ShutDown":
         await shutDown(message)
     elif command == "Restart":
         await restart(message)
     elif command == "help":
         await help(message)
-    elif command == "ViewTask":
+    elif command == "viewTask":
         await viewTask(message)
+    elif command == "createChannel":
+        await createChannel(message)
+    elif command == "doneHere":
+        await doneHere(message)
     else:
         rtrnmsg = "I'm sorry " + getName(message) + ", I'm afraid I can't do that."
         await message.channel.send(rtrnmsg)
