@@ -27,7 +27,7 @@ task_url = config["DEFAULT"]["QuriosintyUrl"] + "task/"
 bot_token = config["DEFAULT"]["BotToken"]
 flag_queue_fname = config["DEFAULT"]["FlagQueueFname"]
 processed_flags_fname = config["DEFAULT"]["ProcessedFname"]
-
+token_json = config["DEFAULT"]["TokenJson"]
 
 
 prefix = "~"
@@ -92,6 +92,10 @@ async def commands_interpreter(message):
         await searchFlags(message)
     elif command == "editFlagDesc":
         await editFlagDesc(message)
+    elif command == "register":
+        await register(message)
+    elif command == "delete":
+        await delete(message)
     else:
         rtrnmsg = "I'm sorry " + getName(message) + ", I'm afraid I can't do that."
         await message.channel.send(rtrnmsg)
@@ -141,9 +145,16 @@ def archive_helper(url):
     #
     archive = wayback.save()
     return archive
+    
 
-
-def makeTask(name, description, data, timeest, request_responses, maker):
+async def makeTask(message, name, description, data, timeest, request_responses, maker):
+    with open(token_json, 'r') as json_file:
+        data2 = json.load(json_file)
+    if not str(message.author.id) in data2:
+        await message.channel.send("You are not registered, so I can't submit to the Quriosinty Queue, however I've submitted to the local queue")
+        return
+    auth_token = data2[str(message.author.id)]
+    headers = {'content-type': 'application/json', 'Authorization': 'Token {}'.format(auth_token)}
     taskdef = {
         "name": name,
         "description": description,
@@ -153,8 +164,13 @@ def makeTask(name, description, data, timeest, request_responses, maker):
         "tool": str(agent_id),
         "event_id": str(event_id),
     }
-    headers = {'content-type': 'application/json', 'Authorization': 'Token {}'.format(tool_token)} 
-    return requests.post(task_url, data=taskdef, headers=headers)
+    reqd = json.dumps(taskdef)
+    if str(message.author.id) in reqd:
+        print("Security Flaw")
+        print(reqd)
+        return
+    requests.post(task_url, data=reqd, headers=headers)
+    await message.channel.send("Submitted")
 
 
 def getName(message):
@@ -236,6 +252,17 @@ def peekQueue(fname):
 
 
 # Command Functions
+async def register(message):
+    terms = stripCommandList(message)
+    token = terms[1]
+    with open(token_json, 'r') as json_file:
+        data = json.load(json_file)
+    data[str(message.author.id)] = token
+    with open(token_json, 'w') as json_file:
+        json.dump(data, json_file)
+    await message.channel.send("Registered!")
+
+    
 async def searchFlags(message):
     terms = stripCommandList(message)
     qres = []
@@ -251,7 +278,7 @@ async def searchFlags(message):
     returnStr = ""
     counter = 1
     if queued != []:
-    
+        
         returnStr = "In Queue:\n```"
         for i in range(len(qres)):
             returnStr += "Flag " + str(counter) + "\n"
@@ -278,7 +305,9 @@ async def searchFlags(message):
         if counter > 0:
             await message.channel.send(returnStr + "```")
     if returnStr == "":
-        await messsage.channel.send("I didn't find anything")
+        await message.channel.send("I didn't find anything")
+    else:
+        await message.channel.send(returnStr)
         
         
 async def editFlagDesc(message):
@@ -299,6 +328,18 @@ async def editFlagDesc(message):
     with open(fname, 'w') as json_file:
         json.dump(data, json_file)
     await message.channel.send("Edits Submitted")
+    
+async def delete(message):
+    terms = stripCommandList(message)
+    uid = terms[1]
+    fname = flag_queue_fname
+    if uid[0] == "P":
+        fname = processed_flags_fname
+    with open(fname, 'r') as json_file:
+        data = json.load(json_file)
+    data.pop(uid)
+    with open(fname, 'w') as json_file:
+        json.dump(data, json_file)
     
     
 async def getOpenFlag(message):
@@ -410,7 +451,8 @@ async def prepFlag(message):
     }
 
     appendQueue(data_format, flag_queue_fname)
-    makeTask(
+    await makeTask(
+        message,
         "Flag Creation Request",
         "Please Examine and Create Flags",
         data_format,
@@ -418,7 +460,7 @@ async def prepFlag(message):
         1,
         message.author.display_name,
     )
-    await message.channel.send("Submitted")
+    
 
 
 
