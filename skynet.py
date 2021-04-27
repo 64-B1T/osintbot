@@ -5,11 +5,13 @@ import requests
 import asyncio
 import functools
 import concurrent.futures
+import json
 from datetime import date
 from configparser import ConfigParser
 
 import discord
 import archiveis
+import waybackpy
 
 
 client = discord.Client()
@@ -22,6 +24,11 @@ agent_id = config["DEFAULT"]["AgentId"]
 event_id = config["DEFAULT"]["EventId"]
 tool_token = config["DEFAULT"]["ToolToken"]
 task_url = config["DEFAULT"]["QuriosintyUrl"] + "task/"
+bot_token = config["DEFAULT"]["BotToken"]
+flag_queue_fname = config["DEFAULT"]["FlagQueueFname"]
+processed_flags_fname = config["DEFAULT"]["ProcessedFname"]
+
+
 
 prefix = "~"
 user_agent = "Mozilla/5.0 (Windows NT 5.1; rv:40.0) Gecko/20100101 Firefox/40.0"
@@ -30,10 +37,35 @@ flag_queue = []
 
 @client.event
 async def on_ready():
+ 
     print("We have logged in as {0.user}".format(client))
 
 
 # Main Controls
+async def help(message):
+
+    helpMenu = (
+        "My prefix is: "
+        + prefix
+        + "\n```"
+        + """
+        ping:\tCheck if the bot is live
+        prepFlag:\tAdd and automatically archive a new flag
+        ShutDown:\tShut down the bot
+        Restart:\tRestart the bot
+        ViewTasks:\tView A Specified Task
+        createChannel:\tCreate a new channel dedicated to a topic (as a one word argument)
+        doneHere:\t delete the channel command was issued from. Must be a discussion channel 
+        viewQueue:\t view the current flag submission queue
+        getOpenFlag:\t Pull a flag from the queue for manual submission to quriosinty
+        searchFlags:\t Search by either URL or keywords or both for known flags
+        editFlagDesc:\t editFlagDesc [Uid} [Desc} edit a flag description via uid
+        """
+        + "```"
+    )
+    await message.channel.send(helpMenu)
+
+
 async def commands_interpreter(message):
     command = stripCommandList(message)[0]
     if command == "ping":
@@ -54,6 +86,12 @@ async def commands_interpreter(message):
         await doneHere(message)
     elif command == "viewQueue":
         await viewQueue(message)
+    elif command == "getOpenFlag":
+        await getOpenFlag(message)
+    elif command == "searchFlags":
+        await searchFlags(message)
+    elif command == "editFlagDesc":
+        await editFlagDesc(message)
     else:
         rtrnmsg = "I'm sorry " + getName(message) + ", I'm afraid I can't do that."
         await message.channel.send(rtrnmsg)
@@ -69,6 +107,27 @@ async def on_message(message):
 
 
 # Helpers
+def checkProcessed(URL, mode = 0):
+    queueItems = []
+    procItems = []
+    with open(flag_queue_fname, 'r') as json_file:
+        data = json.load(json_file)
+    for i in range(data["lower"], data["upper"] + 1):
+        if data[str(i)]["URL"] == URL or URL in data[str(i)]["UserDescription"]:
+            if mode == 0:
+                return data[str(i)], 1, str(i)
+            queueItems.append([data[str(i)], str(i)])
+    with open(processed_flags_fname, 'r') as json_file:
+        data = json.load(json_file)
+    for i in range(data["lower"], data["upper"] + 1):
+        if data[str(i)]["URL"] == URL or URL in data[str(i)]["UserDescription"]:
+            if mode == 0:
+                return data[str(i)], 2, str(i)
+            procItems.append([data[str(i)], str(i)])
+    if mode == 0:
+        return None, 0, str(i)
+    return queueItems, procItems, None
+    
 def helpsave(wayback):
     return wayback.save()
     
@@ -105,7 +164,17 @@ def getName(message):
 def stripCommandList(message):
     return message.content[len(prefix) :].split()
 
-
+def formatFlagTask(item):
+    returnStr = "URL: " + item["URL"] + "\n"
+    returnStr += "Archive URL: " + item["ArchiveURL"] + "\n"
+    returnStr += "Archive Time: " + item["ArchiveTime"] + "\n"
+    returnStr += "Description: " + item["UserDescription"] + "\n"
+    returnStr += "Added By: " + item["AddedBy"] + "\n"
+    if "ProcessedBy"  in item:
+        returnStr += "Processed By: " + item["ProcessedBy"] + "\n"
+    returnStr += "\n"
+    return returnStr
+    
 def formatTask(task):
     taskstr = (
         task["name"] + " " + task["status"] + " since " + task["date_created"] + "\n"
@@ -120,11 +189,164 @@ def formatTask(task):
     taskstr += "Flag URL: " + task["flag"]["url"]
     return taskstr
 
+def preppendQueue(task, fname):
+    with open(fname, 'r') as json_file:
+        data = json.load(json_file)
+    data[str(data["lower"]-1)] = task
+    data["lower"] = data["lower"] -1
+    data["num"] = data["num"] + 1
+    with open(fname, 'w') as json_file:
+        json.dump(data, json_file)
 
+def appendQueue(task, fname):
+    with open(fname, 'r') as json_file:
+        data = json.load(json_file)
+    data[str(data["upper"] + 1)] = task
+    data["upper"] = data["upper"] + 1
+    data["num"] = data["num"] + 1
+    with open(fname, 'w') as json_file:
+       json.dump(data, json_file)
+
+def popQueue(fname):
+    with open(fname, 'r') as json_file:
+        data = json.load(json_file)
+    if data["num"] == 0:
+        return None
+    retr = data[str(data["lower"])]
+    data.pop(str(data["lower"]))
+    data["lower"] = min(data["lower"]+1, data["upper"])
+    data["num"] = data["num"] - 1
+            
+    with open(fname, 'w') as json_file:
+        json.dump(data, json_file)
+     
+    return retr
+    
+def peekQueue(fname):
+    with open(fname, 'r') as json_file:
+        data = json.load(json_file)
+    if data["num"] == 0:
+        return None
+    retr = data[str(data["lower"])]
+    return retr 
+
+
+    
 # Temporary Functions (Until I can figure out how to use the API)
 
 
 # Command Functions
+async def searchFlags(message):
+    terms = stripCommandList(message)
+    qres = []
+    pres = []
+    for term in terms[1:]:
+        queued, processed, _ = checkProcessed(term, 1)
+        for q in queued:
+            if q not in qres:
+                qres.append(q)
+        for p in processed:
+            if p not in pres:
+                pres.append(p)
+    returnStr = ""
+    counter = 1
+    if queued != []:
+    
+        returnStr = "In Queue:\n```"
+        for i in range(len(qres)):
+            returnStr += "Flag " + str(counter) + "\n"
+            returnStr += "UID: Q" + str(qres[i][1]) + "\n"
+            returnStr += formatFlagTask(qres[i][0])
+            counter += 1
+            if counter > 14:
+                await message.channel.send(returnStr + "```")
+                returnStr = "```"
+                counter = 0
+        if counter > 0:
+            returnStr+= "```\n"
+    if processed != []:
+        returnStr += "In Processed:\n```"
+        for i in range(len(pres)):
+            returnStr += "Flag " + str(counter) + "\n"
+            returnStr += "UID: P" + str(pres[i][1]) + "\n"
+            returnStr += formatFlagTask(pres[i][0])
+            counter += 1
+            if counter > 14:
+                await message.channel.send(returnStr + "```")
+                returnStr = "```"
+                counter = 0
+        if counter > 0:
+            await message.channel.send(returnStr + "```")
+    if returnStr == "":
+        await messsage.channel.send("I didn't find anything")
+        
+        
+async def editFlagDesc(message):
+    terms = stripCommandList(message)
+    uid = terms[1]
+    desc = " ".join(terms[2:])
+    fname = flag_queue_fname
+    if uid[0] == "P":
+        fname = processed_flags_fname
+    with open(fname, 'r') as json_file:
+        data = json.load(json_file)
+    keyname = uid[1:]
+    print(keyname)
+    if not keyname in data:
+        await message.channel.send("Didn't find anything matching that UID")
+        return
+    data[str(uid[1:])]["UserDescription"] = desc            
+    with open(fname, 'w') as json_file:
+        json.dump(data, json_file)
+    await message.channel.send("Edits Submitted")
+    
+    
+async def getOpenFlag(message):
+    item = popQueue(flag_queue_fname)
+    if item == None:
+        await message.channel.say("Nothing to do!")
+        return 
+    returnStr = "Here's what I've got for you:\n"
+    returnStr += "```" + formatFlagTask(item) + "```"
+    returnStr += "When you've finished, please type \"Done\""
+    
+    await message.channel.send(returnStr)
+    def check(m):
+        return m.author == message.author and m.channel == message.channel
+    try:
+        answer = await client.wait_for('message', timeout = 90, check=check)
+    except asyncio.TimeoutError:
+        await message.channel.send("Cancelled")
+        preppendQueue(item,flag_queue_fname)
+        return
+    
+    if "done" in answer.content.lower().strip():
+        await message.channel.send("Thank you")
+        appendQueue(item, processed_flags_fname)
+        return
+    else:
+        await message.channel.send("Cancelled")
+        preppendQueue(item,flag_queue_fname)
+
+async def viewQueue(message):
+    with open(flag_queue_fname, 'r') as json_file:
+        data = json.load(json_file)
+    counter = 0
+    iter = 0
+    returnStr = "```"
+    #for i in range(len(flag_queue)):
+    for i in range(data["lower"], data["upper"]+1):
+        counter+=1
+        item = data[str(i)]
+        returnStr += "Flag " + str(i - data["lower"] + 1) + "\n"
+        returnStr += formatFlagTask(item)
+        if counter > 14:
+            await message.channel.send(returnStr + "```")
+            returnStr = "```"
+            counter = 0
+    if counter > 0:
+        await message.channel.send(returnStr + "```")
+        
 async def returnPing(message):
     await message.channel.send("Pong")
 
@@ -132,13 +354,22 @@ async def returnPing(message):
 async def prepFlag(message):
     cmds = stripCommandList(message)
     # archivelink = archiveis.capture(cmds[1])
+    url = cmds[1].strip()
+    possdata, type, _ = checkProcessed(url)
+    if possdata is not None:
+        if type == 1:
+            await message.channel.send("Requested Flag is already in Queue. Here are the Details:\n```" + formatFlagTask(possdata) + "```")
+            return 
+        await message.channel.send("Requested Flag has already been processed. Here are the Details:\n```" + formatFlagTask(possdata) + "```")
+        return
     await message.channel.send("Beginning Flag Prep")
 
     def check(m):
         return m.author == message.author and m.channel == message.channel
     
-    await message.channel.send("Archiving...")
-    url = cmds[1]
+    
+    await message.channel.send("Archiving... Please wait, this may take some time.")
+    
     loop = asyncio.get_running_loop()
     archive = await loop.run_in_executor(None, functools.partial(archive_helper, url))
     await message.channel.send("Would you like to submit any metadata or additional information? (N) to cancel")
@@ -175,9 +406,10 @@ async def prepFlag(message):
         "ArchiveURL": str(archive.archive_url),
         "ArchiveTime": str(archive.timestamp.strftime("%m/%d/%Y %H:%M:%S")),
         "UserDescription": context,
+        "AddedBy":message.author.display_name
     }
 
-    flag_queue.append(data_format)
+    appendQueue(data_format, flag_queue_fname)
     makeTask(
         "Flag Creation Request",
         "Please Examine and Create Flags",
@@ -189,21 +421,7 @@ async def prepFlag(message):
     await message.channel.send("Submitted")
 
 
-async def viewQueue(message):
-    counter = 1
-    returnStr = "```"
-    for i in range(len(flag_queue)):
-        returnStr += "Flag " + str(i + 1) + "\n"
-        returnStr += "URL: " + flag_queue[i]["URL"] + "\n"
-        returnStr += "Archive URL: " + flag_queue[i]["ArchiveURL"] + "\n"
-        returnStr += "Archive Time: " + flag_queue[i]["ArchiveTime"] + "\n"
-        returnStr += "Description: " + flag_queue[i]["UserDescription"] + "\n"
-        if counter > 14:
-            await message.channel.send(returnStr + "```")
-            returnStr = "```"
-            counter = 0
-    if counter > 0:
-        await message.channel.send(returnStr + "```")
+
 
 
 async def createChannel(message):
@@ -257,23 +475,7 @@ async def viewTask(message):
         await message.channel.send("I didn't find anything")
 
 
-async def help(message):
-
-    helpMenu = (
-        "My prefix is: "
-        + prefix
-        + "\n"
-        + """
-        ping:\t\tCheck if the bot is live
-        newFlag:\t\tAdd a new flag to quriosinty
-        ShutDown:\t\tShut down the bot
-        Restart:\t\tRestart the bot
-        ViewTasks:\t\tView A Specified Task
-        """
-    )
-    await message.channel.send(helpMenu)
 
 
-with open("token.txt", "r") as file:
-    token = file.read().strip()
-client.run(token)
+
+client.run(bot_token)
